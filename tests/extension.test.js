@@ -38,8 +38,9 @@ test('no innerHTML is used with dynamic log data in the popup', () => {
 });
 
 test('the manifest does not request permissions the code does not use', () => {
-    const code = ['background.js', 'lib/api.js', 'lib/collector.js', 'lib/logger.js', 'popup.js']
+    const code = ['background.js', 'lib/api.js', 'lib/collector.js', 'lib/logger.js', 'lib/stats.js', 'lib/schema.js', 'popup.js']
         .map((f) => readFileSync(join(ROOT, f), 'utf8')).join('\n');
     if (manifest.permissions.includes('alarms')) assert.match(code, /chrome\.alarms/);
     if (manifest.permissions.includes('cookies')) assert.match(code, /chrome\.cookies/);
+    if (manifest.permissions.includes('notifications')) assert.match(code, /chrome\.notifications/);
 });

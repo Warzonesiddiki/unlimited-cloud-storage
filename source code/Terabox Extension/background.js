@@ -3,6 +3,7 @@
 import { buildUrl, fetchJson, detectSubdomain } from './lib/api.js';
 import { createCollector } from './lib/collector.js';
 import { createLogger } from './lib/logger.js';
+import { createStats } from './lib/stats.js';
 
 const RESUME_ALARM = 'resume-collector';
 const RESUME_PERIOD_MIN = 1;
@@ -35,12 +36,34 @@ const api = {
     finish: (gameId) => getJson(`/rest/1.0/imact/miner/finishgame?game_id=${gameId}`),
 };
 
+const stats = createStats(store);
+
+function notify(title, message) {
+    chrome.notifications.create({
+        type: 'basic',
+        iconUrl: 'images/icon128.png',
+        title,
+        message,
+    }).catch(() => {});
+}
+
 const collector = createCollector({
     api,
     store,
     log,
+    stats,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-    onEvent: (name) => broadcast({ action: name === 'dailyLimitReached' ? 'dailyLimitReached' : 'updateCoinCount' }),
+    onEvent: (name) => {
+        if (name === 'dailyLimitReached') {
+            broadcast({ action: 'dailyLimitReached' });
+            notify('TeraBox Coin Collector', 'Daily free plays are used up. Collection stopped.');
+        } else if (name === 'stopped') {
+            broadcast({ action: 'logUpdated' });
+            notify('TeraBox Coin Collector', 'Collection stopped after repeated errors. Open the log for details.');
+        } else {
+            broadcast({ action: 'updateCoinCount' });
+        }
+    },
 });
 
 async function refreshSubdomain() {
@@ -84,6 +107,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         case 'getStatus':
             Promise.all([store.get('isRunning'), store.get('dailyLimitReached')])
                 .then(([isRunning, dailyLimitReached]) => sendResponse({ isRunning: Boolean(isRunning), dailyLimitReached: Boolean(dailyLimitReached) }));
+            return true;
+        case 'getStats':
+            stats.get().then((s) => sendResponse(s));
             return true;
         case 'getLogs':
             store.get('logs').then((logs) => sendResponse(logs || []));

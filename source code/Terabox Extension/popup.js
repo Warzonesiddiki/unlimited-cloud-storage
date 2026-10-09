@@ -151,6 +151,19 @@ document.addEventListener('DOMContentLoaded', function() {
         logWindow.classList.add('hidden');
     });
 
+    const statsLine = document.getElementById('stats-line');
+
+    async function updateStats() {
+        try {
+            const st = await sendMessage({action: 'getStats'});
+            if (!st) return;
+            const last = st.lastSuccessAt ? new Date(st.lastSuccessAt).toLocaleTimeString() : 'never';
+            statsLine.textContent = `Today: ${st.plays} plays · ${st.cycles} cycles · ${st.errors} errors · last success: ${last}`;
+        } catch (error) {
+            console.error('Error getting stats:', error);
+        }
+    }
+
     async function checkStatus() {
         try {
             const response = await sendMessage({action: 'getStatus'});
@@ -178,6 +191,7 @@ document.addEventListener('DOMContentLoaded', function() {
     chrome.runtime.onMessage.addListener((request) => {
         if (request.action === 'updateCoinCount') {
             updateUserInfoAndCoinCount();
+            updateStats();
         } else if (request.action === 'logUpdated') {
             if (!logWindow.classList.contains('hidden')) {
                 updateLog();
@@ -189,10 +203,12 @@ document.addEventListener('DOMContentLoaded', function() {
 
     updateUserInfoAndCoinCount();
     checkStatus();
+    updateStats();
 
     setInterval(() => {
         updateUserInfoAndCoinCount();
         checkStatus();
+        updateStats();
     }, 30000);
 
     // Particle effect

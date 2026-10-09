@@ -194,3 +194,16 @@ test('resumeIfNeeded does nothing when collection is not running', async () => {
     await collector.resumeIfNeeded();
     assert.equal(collector.loopActive, false);
 });
+
+test('a malformed miner/start response is reported as a schema error, not played', async () => {
+    const { api, calls } = makeApi({
+        pull: async () => pullOf(1),
+        start: async () => ({ errno: 0, data: {} }),
+    });
+    const errors = [];
+    const { collector } = setup({ api, maxFailures: 1, stats: { play() {}, cycle() {}, success() {}, error: async (m) => errors.push(m) } });
+    await collector.start();
+    await settle(collector);
+    assert.equal(calls.finish.length, 0);
+    assert.ok(errors.some((m) => /Unexpected response from miner\/start/.test(m)), errors.join('|'));
+});

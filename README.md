@@ -53,6 +53,10 @@ The extension lives in `source code/Terabox Extension/`. Its logic is split into
 - `lib/api.js`: HTTP client with retry on transient errors only (network, 429, 5xx).
 - `lib/collector.js`: the collection state machine. It plays only **free** plays (from `miner/pull`), falls back to a single game if `pull` is unusable, stops on the daily limit or repeated failures, and never spends coins.
 - `lib/logger.js`: bounded log stored in `chrome.storage`.
+- `lib/schema.js`: validates API responses. If TeraBox changes a shape, the log names the missing field.
+- `lib/stats.js`: daily counters (plays, cycles, errors, last success), shown in the popup.
+
+The popup shows today's stats. Desktop notifications appear when the daily limit is reached or collection stops after repeated errors.
 
 Run the tests (Node 20+, no dependencies):
 

@@ -4,6 +4,10 @@
 // Free plays only. The collector never spends coins: paid plays and the
 // GemMerge game are intentionally not implemented.
 
+import { validateStart, validatePull, SchemaError } from './schema.js';
+
+const noopStats = { play() {}, cycle() {}, success() {}, error() {} };
+
 export const DAILY_LIMIT_ERRNO = 28135;
 export const DAILY_LIMIT_MESSAGE = 'gold miner up to limit today';
 export const MAX_CONSECUTIVE_FAILURES = 5;
@@ -24,6 +28,7 @@ export function createCollector({
     log,            // async (message) => void
     sleep,          // (ms) => Promise
     now = Date.now,
+    stats = noopStats,    // { play(), cycle(), success(), error(message) }
     onEvent = () => {},   // (name) => void: 'coinsUpdated' | 'dailyLimitReached' | 'stopped'
     maxFailures = MAX_CONSECUTIVE_FAILURES,
     baseBackoffMs = 5000,
@@ -50,6 +55,8 @@ export function createCollector({
         const startedAt = now();
         const startData = await api.start();
         if (startData.errno !== 0) throw startError(startData);
+        const check = validateStart(startData);
+        if (!check.ok) throw new SchemaError('miner/start', check.reason);
 
         const { game_id: gameId, map_info: { items } } = startData.data;
         const objectTypes = items.map((item) => item.object_type).filter((t) => !SKIPPED_OBJECT_TYPES.has(t));
@@ -72,6 +79,7 @@ export function createCollector({
 
         const finishData = await api.finish(gameId);
         await log(`Finish game ${gameId}: ${JSON.stringify(finishData)}`);
+        if (finishData.errno === 0) await stats.play();
     }
 
     // Preferred path: read the free plays from miner/pull and play only those.
@@ -79,8 +87,9 @@ export function createCollector({
     // caller should fall back to the single-game path.
     async function runFreePlays() {
         const pulled = await api.pull().catch((error) => ({ errno: -1, error }));
-        if (pulled.errno !== 0 || !pulled.data || typeof pulled.data.free_times_left !== 'number') {
-            await log(`miner/pull unusable (${pulled.errno}); using single-game fallback`);
+        const check = validatePull(pulled);
+        if (pulled.errno !== 0 || !check.ok) {
+            await log(`miner/pull unusable (${pulled.errno}${check.ok ? '' : `: ${check.reason}`}); using single-game fallback`);
             return null;
         }
 
@@ -100,6 +109,7 @@ export function createCollector({
 
     async function runCycle() {
         await log('Starting a coin collection cycle...');
+        await stats.cycle();
 
         // Free bonus coins; failure here is not fatal.
         try {
@@ -115,6 +125,7 @@ export function createCollector({
             await playGame(); // single-game fallback (original flow)
         }
         await log('Coin collection cycle completed');
+        await stats.success();
         onEvent('coinsUpdated');
     }
 
@@ -133,6 +144,7 @@ export function createCollector({
                     return;
                 }
                 failures += 1;
+                await stats.error(error.message);
                 await log(`Error during coin collection cycle (${failures}/${maxFailures}): ${error.message}`);
                 if (failures >= maxFailures) {
                     await store.set({ isRunning: false });
