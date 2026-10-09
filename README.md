@@ -51,7 +51,7 @@ Join thousands of happy users enjoying:
 The extension lives in `source code/Terabox Extension/`. Its logic is split into testable modules under `lib/`:
 
 - `lib/api.js`: HTTP client with retry on transient errors only (network, 429, 5xx).
-- `lib/collector.js`: the collection state machine, with stop on daily limit or repeated failures.
+- `lib/collector.js`: the collection state machine. It plays only **free** plays (from `miner/pull`), falls back to a single game if `pull` is unusable, stops on the daily limit or repeated failures, and never spends coins.
 - `lib/logger.js`: bounded log stored in `chrome.storage`.
 
 Run the tests (Node 20+, no dependencies):

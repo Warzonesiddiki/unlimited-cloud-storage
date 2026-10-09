@@ -27,6 +27,8 @@ async function getJson(path) {
 }
 
 const api = {
+    bonus: () => getJson('/rest/1.0/imact/goldrain/report?&valid_envelope_cnt=80'),
+    pull: () => getJson('/rest/1.0/imact/miner/pull'),
     start: () => getJson('/rest/1.0/imact/miner/start'),
     getItem: (gameId, objectType, reportId) =>
         getJson(`/rest/1.0/imact/miner/getitem?game_id=${gameId}&object_type=${objectType}&report_id=${reportId}`),
