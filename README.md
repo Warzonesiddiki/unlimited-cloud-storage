@@ -16,6 +16,8 @@
   </a>
 </p>
 
+> **Status (personal use, unpublished):** This fork is maintained for personal use only. It is no longer listed on the Chrome Web Store. It automates an undocumented TeraBox game API, so TeraBox's endpoints may change at any time and the extension may stop working without notice. Use it on your own account only, and at your own risk.
+
 ## 🌟 Overview
 
 The TeraBox Coin Collector is an unofficial browser extension designed to simplify the process of collecting coins on TeraBox, allowing users to potentially earn unlimited free cloud storage and premium features daily.
@@ -43,6 +45,22 @@ Join thousands of happy users enjoying:
 - Potential to earn up to 5TB of free cloud storage daily
 - Opportunity to gain 2 years of free premium access every day
 - Access to fast upload speeds (50MB/s+)
+
+## 🛠️ Development
+
+The extension lives in `source code/Terabox Extension/`. Its logic is split into testable modules under `lib/`:
+
+- `lib/api.js`: HTTP client with retry on transient errors only (network, 429, 5xx).
+- `lib/collector.js`: the collection state machine, with stop on daily limit or repeated failures.
+- `lib/logger.js`: bounded log stored in `chrome.storage`.
+
+Run the tests (Node 20+, no dependencies):
+
+```bash
+npm test
+```
+
+Load it in Chrome: open `chrome://extensions`, enable Developer mode, click **Load unpacked**, and select `source code/Terabox Extension`.
 
 ## 🔧 How to Get Started
 

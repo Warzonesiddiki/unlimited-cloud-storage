@@ -1,185 +1,100 @@
-let isRunning = false;
-let logs = [];
-let teraboxSubdomain = ''; // Store the subdomain
+// Service worker (MV3). Stateless between events: everything that must survive
+// a worker restart lives in chrome.storage.local.
+import { buildUrl, fetchJson, detectSubdomain } from './lib/api.js';
+import { createCollector } from './lib/collector.js';
+import { createLogger } from './lib/logger.js';
 
-function addLog(message) {
-    const timestamp = new Date().toISOString();
-    logs.push(`[${timestamp}] ${message}`);
-    if (logs.length > 100) {
-        logs.shift(); // Remove oldest log if we have more than 100
-    }
-    chrome.runtime.sendMessage({action: 'logUpdated'}).catch(console.error);
+const RESUME_ALARM = 'resume-collector';
+const RESUME_PERIOD_MIN = 1;
+
+const store = {
+    get: (key) => chrome.storage.local.get(key).then((r) => r[key]),
+    set: (obj) => chrome.storage.local.set(obj),
+};
+
+const broadcast = (message) => {
+    chrome.runtime.sendMessage(message).catch(() => {}); // popup may be closed
+};
+
+const { log } = createLogger(store, { onAppend: () => broadcast({ action: 'logUpdated' }) });
+
+async function subdomain() {
+    return (await store.get('teraboxSubdomain')) || '';
 }
 
-chrome.runtime.onInstalled.addListener(() => {
-    chrome.storage.local.set({ isRunning: false }).catch(console.error);
+async function getJson(path) {
+    return fetchJson(fetch, buildUrl(await subdomain(), path));
+}
+
+const api = {
+    start: () => getJson('/rest/1.0/imact/miner/start'),
+    getItem: (gameId, objectType, reportId) =>
+        getJson(`/rest/1.0/imact/miner/getitem?game_id=${gameId}&object_type=${objectType}&report_id=${reportId}`),
+    finish: (gameId) => getJson(`/rest/1.0/imact/miner/finishgame?game_id=${gameId}`),
+};
+
+const collector = createCollector({
+    api,
+    store,
+    log,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    onEvent: (name) => broadcast({ action: name === 'dailyLimitReached' ? 'dailyLimitReached' : 'updateCoinCount' }),
+});
+
+async function refreshSubdomain() {
+    const detected = await detectSubdomain(fetch);
+    await store.set({ teraboxSubdomain: detected });
+    await log(detected ? `Using subdomain: ${detected}` : 'Could not detect TeraBox subdomain; using www');
+}
+
+async function userInfoAndCoinCount() {
+    const userInfo = await getJson('/passport/get_info');
+    const coinCount = await getJson('/rest/1.0/inte/system/getrecord');
+    return { userInfo, coinCount };
+}
+
+// Top-level listeners must be registered synchronously so Chrome can wake the worker for them.
+chrome.runtime.onInstalled.addListener(async () => {
+    await store.set({ isRunning: false });
+    chrome.alarms.create(RESUME_ALARM, { periodInMinutes: RESUME_PERIOD_MIN });
+});
+
+chrome.runtime.onStartup.addListener(() => {
+    chrome.alarms.create(RESUME_ALARM, { periodInMinutes: RESUME_PERIOD_MIN });
+    collector.resumeIfNeeded();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === RESUME_ALARM) collector.resumeIfNeeded();
 });
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     switch (request.action) {
         case 'startCollecting':
-            if (!isRunning) {
-                isRunning = true;
-                addLog('Started coin collection process');
-                checkRedirect().then((subdomain) => {
-                    teraboxSubdomain = subdomain;
-                    collectCoins(); // Start the first collection immediately
-                });
-                sendResponse({ success: true });
-            } else {
-                sendResponse({ success: false, message: 'Already running' });
-            }
-            break;
+            (async () => {
+                await refreshSubdomain();
+                sendResponse(await collector.start());
+            })().catch((error) => sendResponse({ success: false, message: error.message }));
+            return true; // async response
         case 'stopCollecting':
-            isRunning = false;
-            addLog('Stopped coin collection process');
-            sendResponse({ success: true });
-            break;
+            collector.stop().then(sendResponse);
+            return true;
         case 'getStatus':
-            sendResponse({ isRunning: isRunning });
-            break;
+            Promise.all([store.get('isRunning'), store.get('dailyLimitReached')])
+                .then(([isRunning, dailyLimitReached]) => sendResponse({ isRunning: Boolean(isRunning), dailyLimitReached: Boolean(dailyLimitReached) }));
+            return true;
         case 'getLogs':
-            sendResponse(logs);
-            break;
+            store.get('logs').then((logs) => sendResponse(logs || []));
+            return true;
         case 'getUserInfoAndCoinCount':
-            getUserInfoAndCoinCount()
-                .then(data => sendResponse(data))
-                .catch(error => sendResponse({error: error.message}));
-            return true; // Indicates that the response is asynchronous
+            userInfoAndCoinCount()
+                .then((data) => sendResponse(data))
+                .catch((error) => {
+                    log(`Error fetching user info and coin count: ${error.message}`);
+                    sendResponse({ error: error.message });
+                });
+            return true;
+        default:
+            return false;
     }
-    return true;
 });
-
-async function checkRedirect() {
-    try {
-        const cookies = await chrome.cookies.getAll({domain: "terabox.com"});
-        const cookieString = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
-
-        const response = await fetch('https://www.terabox.com', { 
-            method: 'GET',
-            redirect: 'follow', // Allow redirects
-            credentials: 'include',
-            headers: {
-                'Cookie': cookieString
-            }
-        });
-        
-        const finalUrl = response.url;
-        const url = new URL(finalUrl);
-        teraboxSubdomain = url.hostname.split('.')[0];
-        addLog(`Redirected to: ${finalUrl}`);
-        addLog(`Using subdomain: ${teraboxSubdomain}`);
-
-        return teraboxSubdomain;
-    } catch (error) {
-        addLog(`Error checking redirect: ${error.message}`);
-        return ''; // Return empty string in case of error
-    }
-}
-
-async function collectCoins() {
-    while (isRunning) {
-        try {
-            addLog('Starting a coin collection cycle...');
-            
-            await delay(1000); // 1 second delay before starting the game
-            
-            const startData = await fetchWithRetry(getTeraboxUrl('/rest/1.0/imact/miner/start'));
-            addLog(`Start game response data: ${JSON.stringify(startData)}`);
-            
-            if (startData.errno !== 0) {
-                if (startData.errno === 28135 && startData.errmsg === 'gold miner up to limit today') {
-                    isRunning = false;
-                    addLog('Daily limit reached. Stopping collection.');
-                    chrome.runtime.sendMessage({action: 'dailyLimitReached'}).catch(console.error);
-                    return;
-                }
-                throw new Error(`Failed to start the game. Error code: ${startData.errno}, Message: ${startData.errmsg || 'Unknown error'}`);
-            }
-
-            const { game_id: gameId, map_info: { items } } = startData.data;
-            const objectTypes = items.map(item => item.object_type);
-
-            await Promise.all(objectTypes.map(async (objectType) => {
-                if (!isRunning) return;
-                const reportId = generateReportId();
-                const url = getTeraboxUrl(`/rest/1.0/imact/miner/getitem?game_id=${gameId}&object_type=${objectType}&report_id=${reportId}`);
-                const getItemData = await fetchWithRetry(url);
-                addLog(`Get item response for object type ${objectType}: ${JSON.stringify(getItemData)}`);
-                await delay(200); // Short delay between item requests
-            }));
-
-            if (!isRunning) return;
-
-            addLog('Waiting 2 seconds before finishing the game...');
-            await delay(2000);
-
-            addLog('Finishing game...');
-            const finishData = await fetchWithRetry(getTeraboxUrl(`/rest/1.0/imact/miner/finishgame?game_id=${gameId}`));
-            addLog(`Finish game response: ${JSON.stringify(finishData)}`);
-
-            addLog('Coin collection cycle completed');
-            
-            chrome.runtime.sendMessage({ action: 'updateCoinCount' }).catch(console.error);
-
-        } catch (error) {
-            addLog(`Error during coin collection cycle: ${error.message}`);
-            await delay(5000); // Wait for 5 seconds before retrying if there's an error
-        }
-    }
-}
-
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function generateReportId() {
-    return Array(16).fill(0).map(() => Math.floor(Math.random() * 10)).join('');
-}
-
-async function fetchWithRetry(url, options = {}, retries = 3) {
-    try {
-        const cookies = await chrome.cookies.getAll({domain: "terabox.com"});
-        const cookieString = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
-
-        const response = await fetch(url, {
-            method: 'GET',
-            credentials: 'include',
-            headers: {
-                'Accept': 'application/json',
-                'Content-Type': 'application/json',
-                'Cookie': cookieString
-            },
-            ...options
-        });
-        return await response.json();
-    } catch (error) {
-        if (retries > 0) {
-            await delay(1000);
-            return fetchWithRetry(url, options, retries - 1);
-        }
-        throw error;
-    }
-}
-
-function getTeraboxUrl(path) {
-    return `https://${teraboxSubdomain || 'www'}.terabox.com${path}`;
-}
-
-async function getUserInfoAndCoinCount() {
-    try {
-        const userInfoUrl = getTeraboxUrl('/passport/get_info');
-        const userInfoResponse = await fetchWithRetry(userInfoUrl);
-        
-        const coinCountUrl = getTeraboxUrl('/rest/1.0/inte/system/getrecord');
-        const coinCountResponse = await fetchWithRetry(coinCountUrl);
-        
-        return {
-            userInfo: userInfoResponse,
-            coinCount: coinCountResponse
-        };
-    } catch (error) {
-        addLog(`Error fetching user info and coin count: ${error.message}`);
-        throw error;
-    }
-}

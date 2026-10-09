@@ -12,17 +12,15 @@ document.addEventListener('DOMContentLoaded', function() {
     const logContent = document.getElementById('log-content');
     const teraboxButton = document.getElementById('terabox-button');
 
+    // Assigning onclick replaces the handler; addEventListener would stack a new
+    // listener on every poll, so one click would open several tabs.
     function updateTeraboxButton(isLoggedIn) {
         if (isLoggedIn) {
             teraboxButton.textContent = 'Open TeraBox';
-            teraboxButton.addEventListener('click', () => {
-                chrome.tabs.create({ url: 'https://www.terabox.com' });
-            });
+            teraboxButton.onclick = () => chrome.tabs.create({ url: 'https://www.terabox.com' });
         } else {
             teraboxButton.textContent = 'Sign Up for TeraBox';
-            teraboxButton.addEventListener('click', () => {
-                chrome.tabs.create({ url: 'https://terabox.com/s/1BjOBgtABLr0eRnUAEHWyug' });
-            });
+            teraboxButton.onclick = () => chrome.tabs.create({ url: 'https://terabox.com/s/1BjOBgtABLr0eRnUAEHWyug' });
         }
     }
 
@@ -69,33 +67,43 @@ document.addEventListener('DOMContentLoaded', function() {
     }
 
     function updateUserInfoAndCoinCount() {
-        chrome.runtime.sendMessage({action: 'getUserInfoAndCoinCount'}, response => {
-            if (response.error) {
-                console.error('Error fetching user info and coin count:', response.error);
+        sendMessage({action: 'getUserInfoAndCoinCount'}).then(response => {
+            if (!response || response.error) {
+                console.error('Error fetching user info and coin count:', response && response.error);
                 showError('Failed to load user info and coin count. Please check your connection and login status.');
-            } else {
-                if (response.userInfo.code === 0) {
-                    profilePicture.src = response.userInfo.data.head_url;
-                    username.textContent = response.userInfo.data.display_name;
-                    updateTeraboxButton(true);
-                } else {
-                    console.error('Error fetching user info:', response.userInfo);
-                    showError('Failed to load user info. Please check if you are logged in to TeraBox.');
-                    updateTeraboxButton(false);
-                }
-
-                if (response.coinCount.errno === 0) {
-                    coinCount.textContent = response.coinCount.data.can_used_cnt;
-                } else {
-                    console.error('Error fetching coin count:', response.coinCount);
-                }
+                return;
             }
+            clearError();
+            if (response.userInfo && response.userInfo.code === 0) {
+                profilePicture.src = response.userInfo.data.head_url;
+                username.textContent = response.userInfo.data.display_name;
+                updateTeraboxButton(true);
+            } else {
+                console.error('Error fetching user info:', response.userInfo);
+                showError('Failed to load user info. Please check if you are logged in to TeraBox.');
+                updateTeraboxButton(false);
+            }
+
+            if (response.coinCount && response.coinCount.errno === 0) {
+                coinCount.textContent = response.coinCount.data.can_used_cnt;
+            } else {
+                console.error('Error fetching coin count:', response.coinCount);
+            }
+        }).catch(error => {
+            console.error('Error fetching user info and coin count:', error);
         });
     }
 
-    function updateButtonState(isRunning) {
+    function updateButtonState(isRunning, dailyLimitReached = false) {
         startButton.style.display = isRunning ? 'none' : 'block';
         stopButton.style.display = isRunning ? 'block' : 'none';
+        if (dailyLimitReached) {
+            startButton.textContent = 'Come Back Tomorrow';
+            startButton.disabled = true;
+        } else {
+            startButton.textContent = 'Start Collecting';
+            startButton.disabled = false;
+        }
     }
 
     function sendMessage(message) {
@@ -146,7 +154,7 @@ document.addEventListener('DOMContentLoaded', function() {
     async function checkStatus() {
         try {
             const response = await sendMessage({action: 'getStatus'});
-            updateButtonState(response.isRunning);
+            updateButtonState(response.isRunning, response.dailyLimitReached);
         } catch (error) {
             console.error('Error getting status:', error);
         }
@@ -154,15 +162,20 @@ document.addEventListener('DOMContentLoaded', function() {
 
     async function updateLog() {
         try {
-            const logs = await sendMessage({action: 'getLogs'});
-            logContent.innerHTML = logs.map(log => `<div>${log}</div>`).join('');
+            const logs = (await sendMessage({action: 'getLogs'})) || [];
+            // textContent, not innerHTML: log lines contain raw server responses.
+            logContent.replaceChildren(...logs.map(line => {
+                const div = document.createElement('div');
+                div.textContent = line;
+                return div;
+            }));
             logContent.scrollTop = logContent.scrollHeight;
         } catch (error) {
             console.error('Error getting logs:', error);
         }
     }
 
-    chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    chrome.runtime.onMessage.addListener((request) => {
         if (request.action === 'updateCoinCount') {
             updateUserInfoAndCoinCount();
         } else if (request.action === 'logUpdated') {
@@ -170,9 +183,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 updateLog();
             }
         } else if (request.action === 'dailyLimitReached') {
-            updateButtonState(false);
-            startButton.textContent = 'Come Back Tomorrow';
-            startButton.disabled = true;
+            updateButtonState(false, true);
         }
     });
 
@@ -263,10 +274,20 @@ document.addEventListener('DOMContentLoaded', function() {
     })
 });
 
+// A single error line that is replaced (not appended) on each failure.
 function showError(message) {
-    const errorDiv = document.createElement('div');
+    let errorDiv = document.getElementById('error-msg');
+    if (!errorDiv) {
+        errorDiv = document.createElement('div');
+        errorDiv.id = 'error-msg';
+        errorDiv.style.color = 'red';
+        errorDiv.style.marginTop = '10px';
+        document.getElementById('app').appendChild(errorDiv);
+    }
     errorDiv.textContent = message;
-    errorDiv.style.color = 'red';
-    errorDiv.style.marginTop = '10px';
-    document.getElementById('app').appendChild(errorDiv);
+}
+
+function clearError() {
+    const errorDiv = document.getElementById('error-msg');
+    if (errorDiv) errorDiv.remove();
 }
