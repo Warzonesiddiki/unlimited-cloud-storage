@@ -1,12 +1,11 @@
 {
   "manifest_version": 3,
   "name": "TeraBox Coin Collector",
-  "version": "1.5",
+  "version": "1.7",
   "description": "Collect coins from TeraBox and get unlimited free cloud storage and premium on TeraBox",
   "permissions": [
     "alarms",
-    "storage",
-    "cookies"
+    "storage"
   ],
   "host_permissions": [
     "https://*.terabox.com/*"
@@ -25,6 +24,7 @@
     "128": "images/icon128.png"
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   }
 }
